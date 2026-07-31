@@ -53,6 +53,9 @@ GZIP_FILES = [
     "demand_data.json",
     "roads.geojson",
     "runways_taxiways.geojson",
+    # Presence of ocean_depth_index.json.gz is what makes Railyard set hasOceanDepth and turn the
+    # oceanFoundations layer on by default — without it, water is unconstrained.
+    "ocean_depth_index.json",
 ]
 
 

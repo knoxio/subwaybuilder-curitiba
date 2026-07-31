@@ -2,6 +2,8 @@
 
 A Subway Builder map of Greater Curitiba, Paraná, Brazil.
 
+![Jardim Botânico de Curitiba](gallery/screenshot1.webp)
+
 **Status: pack builds and validates with zero blockers.** Not yet published or played.
 
 ```
@@ -225,6 +227,9 @@ macOS, and Docker reports that as a bare exit 125.
   slightly.
 
 ## Attribution
+
+Cover photo: Jardim Botânico de Curitiba by [jerzykwpodrozy](https://pixabay.com/users/jerzykwpodrozy-16143839/)
+via Pixabay (Pixabay Content License).
 
 IBGE (Censo Demográfico 2022 — Agregados por Setores Censitários, CNEFE; CEMPRE 2024) and
 IPPUC / Prefeitura Municipal de Curitiba, both public with attribution. Building footprints

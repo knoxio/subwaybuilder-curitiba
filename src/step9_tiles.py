@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import sys
 import zipfile
@@ -39,6 +40,7 @@ TILE_DIR = cwb.DATA / "tiles"
 # Zoom range per layer, mirroring what a first-party tileset ships.
 LAYER_ZOOM = {
     "water": (4, MAXZOOM),
+    "ocean_foundations": (8, MAXZOOM),
     "buildings": (12, MAXZOOM),
     "landuse": (6, MAXZOOM),
     "commercial": (10, MAXZOOM),
@@ -142,8 +144,6 @@ def write_seq(path: Path, features) -> int:
 
 def area_m2(geometry) -> float:
     """Rough planar area, enough for the style's parks-large/parks-small split."""
-    import math
-
     rings = []
     if geometry["type"] == "Polygon":
         rings = [geometry["coordinates"][0]]
@@ -194,44 +194,180 @@ def build_water() -> Path:
     return out
 
 
+# Bed depth in metres below the surface, by water kind. Negative, matching the game's convention.
+# Curitiba is inland, so there is no bathymetry to sample — these are class defaults. The two
+# drinking-water reservoirs (Passaúna, Iraí) are the deep bodies; rivers here are shallow.
+WATER_DEPTH_M = {
+    "reservoir": -9.0,
+    "basin": -6.0,
+    "lake": -6.0,
+    "water": -4.0,
+    "river": -3.0,
+    "canal": -3.0,
+    "dock": -4.0,
+    "wetland": -1.0,
+}
+DEFAULT_WATER_DEPTH_M = -4.0
+# Grid cell size for the depth index, in degrees of latitude — the value the foundry uses.
+OCEAN_CELL_SIZE = 0.0027
+
+
+def build_ocean_depth(water_seq: Path) -> Path | None:
+    """`ocean_depth_index.json` plus the `ocean_foundations` tile layer.
+
+    Without these two, water is unconstrained: tracks can be laid straight across a reservoir at
+    any elevation because nothing tells the game where the bed is. The index is the rule, the tile
+    layer is the visual — shipping only one of them gets you either an invisible restriction or a
+    shaded surface that restricts nothing.
+
+    The index format mirrors the buildings index: a uniform grid over the water bbox, each
+    non-empty cell listing the polygons overlapping it.
+    """
+    print("  ocean depth index + ocean_foundations")
+    from shapely.geometry import mapping, shape
+
+    polygons = []
+    for feature in features_from_seq(water_seq):
+        geometry = feature.get("geometry") or {}
+        kind = (feature.get("properties") or {}).get("kind") or "water"
+        depth = WATER_DEPTH_M.get(kind, DEFAULT_WATER_DEPTH_M)
+        try:
+            geom = shape(geometry)
+        except Exception:  # noqa: BLE001
+            continue
+        if geom.is_empty:
+            continue
+        parts = geom.geoms if geom.geom_type == "MultiPolygon" else [geom]
+        for part in parts:
+            if part.geom_type != "Polygon" or part.is_empty:
+                continue
+            polygons.append((part, depth))
+    if not polygons:
+        print("    ! no water polygons — skipping")
+        return None
+
+    min_lon = min(p.bounds[0] for p, _ in polygons)
+    min_lat = min(p.bounds[1] for p, _ in polygons)
+    max_lon = max(p.bounds[2] for p, _ in polygons)
+    max_lat = max(p.bounds[3] for p, _ in polygons)
+    cs_y = OCEAN_CELL_SIZE
+    cs_x = cs_y / math.cos(math.radians((min_lat + max_lat) / 2))
+    cols = max(1, math.ceil((max_lon - min_lon) / cs_x))
+    rows = max(1, math.ceil((max_lat - min_lat) / cs_y))
+
+    depths = []
+    cells: dict[tuple[int, int], list[int]] = {}
+    for index, (polygon, depth) in enumerate(polygons):
+        west, south, east, north = polygon.bounds
+        depths.append(
+            {
+                "b": [round(v, 6) for v in polygon.bounds],
+                "d": depth,
+                "p": [[[round(x, 6), round(y, 6)] for x, y in polygon.exterior.coords]],
+            }
+        )
+        c0 = max(0, int((west - min_lon) // cs_x))
+        c1 = min(cols - 1, int((east - min_lon) // cs_x))
+        r0 = max(0, int((south - min_lat) // cs_y))
+        r1 = min(rows - 1, int((north - min_lat) // cs_y))
+        for col in range(c0, c1 + 1):
+            for row in range(r0, r1 + 1):
+                cells.setdefault((col, row), []).append(index)
+
+    all_depths = [d["d"] for d in depths]
+    index_payload = {
+        "cs": cs_y,
+        "bbox": [round(min_lon, 6), round(min_lat, 6), round(max_lon, 6), round(max_lat, 6)],
+        "grid": [cols, rows],
+        "cells": [[col, row, *ids] for (col, row), ids in sorted(cells.items(), key=lambda kv: kv[0][::-1])],
+        "depths": depths,
+        "stats": {"count": len(depths), "minDepth": min(all_depths), "maxDepth": max(all_depths)},
+    }
+    cwb.write_json(cwb.OUT / "ocean_depth_index.json", index_payload)
+    print(f"    {len(depths):,} water polygons, grid {cols} x {rows}, {len(cells):,} cells")
+    print(f"    depth range {min(all_depths)} to {max(all_depths)} m")
+
+    layer = cwb.INTERIM / "layer_ocean_foundations.geojsonseq"
+    written = write_seq(
+        layer,
+        (
+            {
+                "type": "Feature",
+                "properties": {"depth_min": depth, "kind": "ocean"},
+                "geometry": mapping(polygon),
+            }
+            for polygon, depth in polygons
+        ),
+    )
+    print(f"    ocean_foundations features: {written:,}")
+    return layer
+
+
 def build_landuse() -> Path:
+    """Parks and aerodromes in one `landuse` layer, with the two made geometrically disjoint.
+
+    Railyard renders both from this layer as `fill-extrusion` with height 0 and base 0
+    (`parks-modded` filters `kind=park`, `airports-modded` filters `kind=aerodrome`). Two
+    coplanar extrusions at the same height z-fight: Afonso Pena's apron flickered against the
+    grass and woodland polygons OSM maps *inside* the airport perimeter — 75 park polygons
+    overlapping 4.63 km2 of aerodrome.
+
+    Dissolving the parks and subtracting the aerodromes fixes both that and park-on-park overlap
+    (a wood inside a park is mapped as both), which z-fights the same way but less visibly.
+    """
     print("  landuse (parks + aerodromes)")
     out = cwb.INTERIM / "layer_landuse.geojsonseq"
     parks = osmium_layer("park", OSM_PARK)
     aero = osmium_layer("aerodrome", OSM_AERODROME)
 
+    from shapely.geometry import mapping, shape
+    from shapely.ops import unary_union
+
+    park_geoms = [shape(f["geometry"]) for f in features_from_seq(parks)]
+    for layer in ("PARQUES_E_BOSQUES", "PRACAS_E_JARDINETES"):
+        path = shapefile_to_geojson(layer, cwb.INTERIM / f"ippuc_{layer}.geojson")
+        if not path:
+            continue
+        for feature in json.loads(path.read_text(encoding="utf-8")).get("features", []):
+            geometry = feature.get("geometry") or {}
+            if geometry.get("type") in ("Polygon", "MultiPolygon"):
+                park_geoms.append(shape(geometry))
+    aero_geoms = [shape(f["geometry"]) for f in features_from_seq(aero)]
+    print(f"    inputs: {len(park_geoms):,} park, {len(aero_geoms):,} aerodrome")
+
+    park_geoms = [g for g in park_geoms if g.is_valid and not g.is_empty]
+    aero_geoms = [g for g in aero_geoms if g.is_valid and not g.is_empty]
+    merged_parks = unary_union(park_geoms) if park_geoms else None
+    merged_aero = unary_union(aero_geoms) if aero_geoms else None
+    if merged_parks is not None and merged_aero is not None:
+        merged_parks = merged_parks.difference(merged_aero)
+
+    def explode(geometry):
+        if geometry is None or geometry.is_empty:
+            return
+        if geometry.geom_type == "Polygon":
+            yield geometry
+        elif geometry.geom_type in ("MultiPolygon", "GeometryCollection"):
+            for part in geometry.geoms:
+                if part.geom_type == "Polygon" and not part.is_empty:
+                    yield part
+
     def gen():
-        for feature in features_from_seq(parks):
-            geometry = feature["geometry"]
+        for polygon in explode(merged_parks):
+            geometry = mapping(polygon)
             yield {
                 "type": "Feature",
                 "properties": {"kind": "park", "area": round(area_m2(geometry), 1), "sort_rank": 300},
                 "geometry": geometry,
             }
-        for layer in ("PARQUES_E_BOSQUES", "PRACAS_E_JARDINETES"):
-            path = shapefile_to_geojson(layer, cwb.INTERIM / f"ippuc_{layer}.geojson")
-            if not path:
-                continue
-            for feature in json.loads(path.read_text(encoding="utf-8")).get("features", []):
-                geometry = feature.get("geometry") or {}
-                if geometry.get("type") in ("Polygon", "MultiPolygon"):
-                    yield {
-                        "type": "Feature",
-                        "properties": {
-                            "kind": "park",
-                            "area": round(area_m2(geometry), 1),
-                            "sort_rank": 300,
-                        },
-                        "geometry": geometry,
-                    }
-        for feature in features_from_seq(aero):
+        for polygon in explode(merged_aero):
             yield {
                 "type": "Feature",
                 "properties": {"kind": "aerodrome", "sort_rank": 250},
-                "geometry": feature["geometry"],
+                "geometry": mapping(polygon),
             }
 
-    print(f"    features: {write_seq(out, gen()):,}")
+    print(f"    features after dissolve + difference: {write_seq(out, gen()):,}")
     return out
 
 
@@ -406,7 +542,11 @@ def main() -> int:
     TILE_DIR.mkdir(parents=True, exist_ok=True)
 
     sources: dict[str, Path] = {}
-    sources["water"] = build_water()
+    water_seq = build_water()
+    sources["water"] = water_seq
+    ocean = build_ocean_depth(water_seq)
+    if ocean:
+        sources["ocean_foundations"] = ocean
     sources["landuse"] = build_landuse()
     commercial, industrial = build_zoning()
     sources["commercial"] = commercial

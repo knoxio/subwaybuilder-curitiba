@@ -44,6 +44,32 @@ MIN_BUILDING_AREA_M2 = 40
 # Grid cell size in degrees of latitude, matching the base game.
 CELL_SIZE = 0.0009
 DEFAULT_FOUNDATION_M = 10.0
+MAX_FOUNDATION_M = 80.0
+
+# Foundation depth model.
+#
+# A uniform depth is useless in play: if every building bottoms out at 10 m then a tunnel at 11 m
+# is unconstrained under the entire city, and the buildings index stops being a constraint at all.
+# Depth has to vary with the structure.
+#
+# Where a real height is known, depth scales with height and slenderness — a tall narrow tower
+# needs to go deeper than a squat one of the same height:
+#
+#     depth = HEIGHT_ALPHA * h * (h / width) ** 0.25
+#
+# Overture's Brazilian footprints almost never carry a height (0.1%), so for the rest the
+# *footprint area* stands in. That is measured geometry rather than an assumption about the
+# building, and it separates the cases that matter: a 20,000 m2 warehouse or shopping centre is
+# founded far deeper than a 60 m2 house whatever their heights. Documented as a proxy, not a claim.
+HEIGHT_ALPHA = 0.22
+AREA_DEPTH_TIERS = [
+    (100, 10.0),
+    (500, 12.0),
+    (2_000, 16.0),
+    (10_000, 22.0),
+    (40_000, 30.0),
+]
+AREA_DEPTH_MAX = 38.0
 
 RUNWAY_WIDTH_M = {"runway": 30.0, "taxiway": 10.0}
 
@@ -208,6 +234,19 @@ def ring_area_m2(ring: list, lat0: float) -> float:
     return abs(total) / 2
 
 
+def foundation_depth(height: float | None, area_m2: float, min_width_m: float) -> tuple[float, str]:
+    """Foundation depth in metres, and which model produced it."""
+    if height and height > 4.0:
+        width = max(min_width_m, 4.0)
+        depth = HEIGHT_ALPHA * height * (height / width) ** 0.25
+        if depth > DEFAULT_FOUNDATION_M:
+            return min(depth, MAX_FOUNDATION_M), "height"
+    for limit, depth in AREA_DEPTH_TIERS:
+        if area_m2 < limit:
+            return depth, "area"
+    return AREA_DEPTH_MAX, "area"
+
+
 def osm_height_index(pbf: Path) -> list[tuple[list[float], float]]:
     """(bounds, height) for OSM buildings that carry usable height information.
 
@@ -277,6 +316,7 @@ def build_buildings_overture(pbf: Path) -> None:
     max_lon = max_lat = float("-inf")
     skipped_small = skipped_shape = 0
     borrowed = 0
+    depth_models = {"height": 0, "area": 0}
 
     while True:
         batch = rows.fetchmany(50_000)
@@ -312,12 +352,6 @@ def build_buildings_overture(pbf: Path) -> None:
                 max_lon = max(max_lon, bounds[2])
                 max_lat = max(max_lat, bounds[3])
 
-                depth = DEFAULT_FOUNDATION_M
-                if under:
-                    try:
-                        depth = max(DEFAULT_FOUNDATION_M, float(under) * 3.5)
-                    except (TypeError, ValueError):
-                        pass
                 metres = None
                 if height:
                     metres = float(height)
@@ -328,12 +362,25 @@ def build_buildings_overture(pbf: Path) -> None:
                     if len(hits):
                         metres = height_values[int(hits[0])]
                         borrowed += 1
-                if metres is None or not (1.0 <= metres <= 400.0):
+                known_height = metres if metres and 1.0 <= metres <= 400.0 else None
+                if known_height is None:
                     metres = 3.2
+
+                # metres-per-degree at this latitude, for area and width in real units
+                span_x = (bounds[2] - bounds[0]) * 111_320.0 * 0.902
+                span_y = (bounds[3] - bounds[1]) * 110_574.0
+                area_m2 = polygon.area * 1.113e5 * 1.005e5
+                depth, model = foundation_depth(known_height, area_m2, min(span_x, span_y))
+                depth_models[model] += 1
+                if under:
+                    try:
+                        depth = max(depth, float(under) * 3.5)
+                    except (TypeError, ValueError):
+                        pass
                 buildings.append(
                     {
                         "bounds": bounds,
-                        "foundationDepth": depth,
+                        "foundationDepth": round(depth, 2),
                         "polygon": [outer],
                         "height": round(metres, 2),
                     }
@@ -342,6 +389,11 @@ def build_buildings_overture(pbf: Path) -> None:
     print(f"  buildings kept: {len(buildings):,}")
     print(f"  dropped: {skipped_small:,} under {MIN_BUILDING_AREA_M2} m2, {skipped_shape:,} bad geometry")
     print(f"  heights borrowed from OSM: {borrowed:,}")
+    print(f"  foundation depth from height: {depth_models['height']:,}  from footprint area: {depth_models['area']:,}")
+    depths = [b["foundationDepth"] for b in buildings]
+    import statistics
+    print(f"  depth: min {min(depths)} median {statistics.median(depths)} max {max(depths)} "
+          f"({len(set(depths)):,} distinct)")
     _write_index(buildings, min_lon, min_lat, max_lon, max_lat)
 
 
