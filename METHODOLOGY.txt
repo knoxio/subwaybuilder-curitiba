@@ -18,6 +18,9 @@ SPECIAL DEMAND
 TOTALS
 19,659 demand points, 64,354 pops, 2,037,039 trips. 64.6% commute, 20.0% special, 15.3% school.
 
+EFFECTIVE RESOLUTION
+Worth separating from the reporting granularity in the dropdowns above. The finished demand surface is address-level for both residents and jobs, because CNEFE places every dwelling and every establishment individually. What is coarse is the job control total: CEMPRE publishes one employment figure per municipality, and the census publishes commute-time and workplace-location marginals per municipality. Resident counts are census tract level, median 567 people per tract. So the totals are municipal for jobs and tract-level for residents, while the placement of both is per address.
+
 LIMITATIONS
 
 CNEFE and the tract mesh are different vintages. CNEFE 2022 uses the preliminary mesh, malha_com_atributos uses the corrected April 2025 one. The tract codes look joinable and are not. Strip CNEFE's suffix and 97% of codes match, but point-in-polygon puts 11% of addresses in a different tract. Assignment is spatial.
