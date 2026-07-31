@@ -346,12 +346,41 @@ def build_ocean_depth(polygons_in, water_kind) -> Path | None:
     that restricts nothing.
     """
     print("  ocean depth index + ocean_foundations")
-    from shapely.geometry import mapping
+    from shapely import STRtree
+    from shapely.geometry import Point, mapping
 
-    polygons = [
-        (p, WATER_DEPTH_M.get(water_kind.get(id(p), "water"), DEFAULT_WATER_DEPTH_M))
-        for p in polygons_in
-    ]
+    import bathymetry
+
+    KM2 = 1.113e5 * 1.005e5
+
+    # Real per-body depths from HydroLAKES where the water body is covered, split into concentric
+    # bands so the bed has a profile instead of being flat. Anything unmatched keeps the class
+    # default for its water kind.
+    base = cwb.RAW / "hydrolakes" / "HydroLAKES_points_v10_shp" / "HydroLAKES_points_v10"
+    lakes = bathymetry.load_hydrolakes(base, cwb.BBOX) if base.with_suffix(".shp").exists() else []
+    print(f"    HydroLAKES bodies in bbox: {len(lakes)}")
+    lake_tree = STRtree([Point(l["lon"], l["lat"]) for l in lakes]) if lakes else None
+
+    polygons: list[tuple[object, float]] = []
+    matched = banded = 0
+    for polygon in polygons_in:
+        kind = water_kind.get(id(polygon), "water")
+        lake = None
+        if lake_tree is not None:
+            for i in lake_tree.query(polygon, predicate="contains"):
+                candidate = lakes[int(i)]
+                if lake is None or candidate["depth_max"] > lake["depth_max"]:
+                    lake = candidate
+        if lake is None:
+            polygons.append((polygon, WATER_DEPTH_M.get(kind, DEFAULT_WATER_DEPTH_M)))
+            continue
+        matched += 1
+        bands = bathymetry.depth_bands(polygon, lake["depth_max"], polygon.area * KM2)
+        if len(bands) > 1:
+            banded += 1
+        polygons.extend(bands)
+    print(f"    polygons matched to a HydroLAKES body: {matched}  profiled into bands: {banded}")
+    print(f"    depth polygons after banding: {len(polygons):,} (from {len(polygons_in):,})")
     if not polygons:
         print("    ! no water polygons — skipping")
         return None

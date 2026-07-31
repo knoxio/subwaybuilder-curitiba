@@ -66,6 +66,7 @@ in [../docs/09-brazil-data-sources.md](../docs/09-brazil-data-sources.md).
 | Schools | INEP Censo Escolar 2024 | 2,051 active schools, 680,403 enrolments, 79% geocoded to a CNEFE education address |
 | Zoning, bairros, parks, water | IPPUC (SIRGAS-2000) | 223 zoning polygons, 75 official bairros |
 | Buildings, roads | Overture 2026-07-22.0, OSM | Overture has **15× more footprints than OSM** here |
+| Water depth | HydroLAKES (Messager et al. 2016) | 13 bodies, per-body mean depth, banded into profiles |
 
 Target classification: `high-data-quality` + `high-detail` under the registry's
 [rubric](../docs/06-railyard-and-registry.md).
@@ -214,8 +215,11 @@ values, and draft answers to the data-quality questionnaire that follows validat
 
 ## Known gaps
 
-- **No `ocean_foundations`.** Curitiba is inland, so there is no coast to shade. The Passaúna
-  and Iraí reservoirs are large enough that unrestricted tunnelling under them is worth a look.
+- **Water depths are modelled, not surveyed.** No bathymetric survey is published for Curitiba's
+  reservoirs by IBGE, IPPUC or ANA, and GEBCO is ocean-only. HydroLAKES supplies a modelled *mean*
+  depth per body; a maximum is derived from it by assuming a parabolic basin (`Dmax = 2 × Depth_avg`;
+  a cone would give 3×), and the profile shape `d(r) = Dmax·√r` is an assumption too — steep sides
+  and a flat middle, which is right for a drowned river valley but is not a measurement.
 - **No `drivingPath`.** Measured, not guessed: a median 14 km route is 370 coordinates and 8.8 KB
   of JSON, so paths for all 53,918 pops would add **≈474 MB** to a 9.6 MB file and more than
   double the pack. `src/step6_routing.py --driving-path` will generate them if you want to trade
@@ -237,6 +241,9 @@ values, and draft answers to the data-quality questionnaire that follows validat
 
 Cover photo: Jardim Botânico de Curitiba by [jerzykwpodrozy](https://pixabay.com/users/jerzykwpodrozy-16143839/)
 via Pixabay (Pixabay Content License).
+
+Water depths from [HydroLAKES](https://www.hydrosheds.org/products/hydrolakes) (Messager et al.
+2016), CC BY 4.0.
 
 IBGE (Censo Demográfico 2022 — Agregados por Setores Censitários, CNEFE; CEMPRE 2024) and
 IPPUC / Prefeitura Municipal de Curitiba, both public with attribution. Building footprints
