@@ -68,8 +68,85 @@ ZONE_COLLEGE = {"ZE"}
 ZONE_INDUSTRIAL = {"ZI", "ZI-LV"}
 
 
+# Ground-level polygon layers, in the order they win where they overlap.
+#
+# Every one of these is drawn by the game (or by Railyard's loader) as a fill or a fill-extrusion
+# sitting at height 0. Two of them covering the same ground are coplanar, and coplanar surfaces
+# z-fight — the flicker is a depth-buffer tie, not a data error, so it cannot be fixed by reordering
+# layers or nudging opacity. The only fix is to make the surfaces disjoint.
+#
+# Measured overlap before flattening: water/park 16.11 km2, park/commercial 4.29, park/industrial
+# 4.27, commercial/industrial 1.37, park/college 1.06, plus 6.75 km2 of self-overlap inside
+# industrial alone (IPPUC zoning and OSM landuse=industrial stacked on each other).
+#
+# Priority reasoning: a lake inside a park should read as water; a campus inside a commercial
+# district should read as a campus (which is what first-party tilesets do); parks beat the two
+# generic employment zones because Curitiba's green space is the thing worth seeing.
+GROUND_PRIORITY = ["water", "aerodrome", "college", "park", "industrial", "commercial"]
+
+# Bed depth in metres below the surface, by water kind. Negative, matching the game's convention.
+# Curitiba is inland so there is no bathymetry to sample — these are class defaults. The two
+# drinking-water reservoirs (Passauna, Irai) are the deep bodies; rivers here are shallow.
+WATER_DEPTH_M = {
+    "reservoir": -9.0,
+    "basin": -6.0,
+    "lake": -6.0,
+    "water": -4.0,
+    "river": -3.0,
+    "canal": -3.0,
+    "dock": -4.0,
+    "wetland": -1.0,
+}
+DEFAULT_WATER_DEPTH_M = -4.0
+# Grid cell size for the depth index, in degrees of latitude — the value the foundry uses.
+OCEAN_CELL_SIZE = 0.0027
+
+
 def run(cmd: list[str], **kwargs) -> None:
     subprocess.run(cmd, check=True, **kwargs)
+
+
+def flatten_ground(groups: dict[str, list]) -> dict[str, list]:
+    """Dissolve each ground layer and subtract everything of higher priority.
+
+    Returns the same keys with disjoint geometry: no point on the map is covered by two of them.
+    Dissolving also removes each layer's overlap with itself, which z-fights identically but is
+    easier to miss because it happens within one colour.
+    """
+    from shapely.ops import unary_union
+
+    KM2 = 1.113e5 * 1.005e5 / 1e6
+    claimed = None
+    out: dict[str, list] = {}
+    for name in GROUND_PRIORITY:
+        geoms = [g for g in groups.get(name, []) if g.is_valid and not g.is_empty]
+        if not geoms:
+            out[name] = []
+            continue
+        raw_area = sum(g.area for g in geoms) * KM2
+        merged = unary_union(geoms)
+        if claimed is not None:
+            merged = merged.difference(claimed)
+        kept = list(_explode(merged))
+        kept_area = sum(g.area for g in kept) * KM2
+        print(
+            f"    {name:<11} {len(geoms):>6,} -> {len(kept):>6,} polys   "
+            f"{raw_area:>8.2f} -> {kept_area:>8.2f} km2"
+        )
+        out[name] = kept
+        claimed = merged if claimed is None else unary_union([claimed, merged])
+    return out
+
+
+def _explode(geometry):
+    if geometry is None or geometry.is_empty:
+        return
+    if geometry.geom_type == "Polygon":
+        yield geometry
+    elif geometry.geom_type in ("MultiPolygon", "GeometryCollection"):
+        for part in geometry.geoms:
+            if part.geom_type == "Polygon" and not part.is_empty:
+                yield part
 
 
 def shapefile_to_geojson(layer: str, out: Path, *, where: str | None = None) -> Path | None:
@@ -163,85 +240,118 @@ def area_m2(geometry) -> float:
     return total
 
 
-def build_water() -> Path:
-    print("  water")
-    out = cwb.INTERIM / "layer_water.geojsonseq"
+def _collect_water():
+    from shapely.geometry import shape
+
     seq = osmium_layer("water", OSM_WATER)
-
-    def gen():
-        for feature in features_from_seq(seq):
-            tags = feature.get("properties") or {}
-            kind = tags.get("natural") or tags.get("landuse") or tags.get("waterway") or "water"
-            yield {
-                "type": "Feature",
-                "properties": {"kind": kind, "sort_rank": 200},
-                "geometry": feature["geometry"],
-            }
-        for layer in ("HIDRO_RIOS_PG", "HIDRO_LAGOS_LAGOAS_REPRESAS", "HIDRO_AREA_UMIDA"):
-            path = shapefile_to_geojson(layer, cwb.INTERIM / f"ippuc_{layer}.geojson")
-            if not path:
-                continue
-            data = json.loads(path.read_text(encoding="utf-8"))
-            for feature in data.get("features", []):
-                if (feature.get("geometry") or {}).get("type") in ("Polygon", "MultiPolygon"):
-                    yield {
-                        "type": "Feature",
-                        "properties": {"kind": "water", "sort_rank": 200},
-                        "geometry": feature["geometry"],
-                    }
-
-    print(f"    features: {write_seq(out, gen()):,}")
+    out = []
+    for feature in features_from_seq(seq):
+        tags = feature.get("properties") or {}
+        kind = tags.get("natural") or tags.get("landuse") or tags.get("waterway") or "water"
+        try:
+            out.append((shape(feature["geometry"]), kind))
+        except Exception:  # noqa: BLE001
+            pass
+    for layer in ("HIDRO_RIOS_PG", "HIDRO_LAGOS_LAGOAS_REPRESAS", "HIDRO_AREA_UMIDA"):
+        path = shapefile_to_geojson(layer, cwb.INTERIM / f"ippuc_{layer}.geojson")
+        if not path:
+            continue
+        for feature in json.loads(path.read_text(encoding="utf-8")).get("features", []):
+            geometry = feature.get("geometry") or {}
+            if geometry.get("type") in ("Polygon", "MultiPolygon"):
+                try:
+                    out.append((shape(geometry), "water"))
+                except Exception:  # noqa: BLE001
+                    pass
     return out
 
 
-# Bed depth in metres below the surface, by water kind. Negative, matching the game's convention.
-# Curitiba is inland, so there is no bathymetry to sample — these are class defaults. The two
-# drinking-water reservoirs (Passaúna, Iraí) are the deep bodies; rivers here are shallow.
-WATER_DEPTH_M = {
-    "reservoir": -9.0,
-    "basin": -6.0,
-    "lake": -6.0,
-    "water": -4.0,
-    "river": -3.0,
-    "canal": -3.0,
-    "dock": -4.0,
-    "wetland": -1.0,
-}
-DEFAULT_WATER_DEPTH_M = -4.0
-# Grid cell size for the depth index, in degrees of latitude — the value the foundry uses.
-OCEAN_CELL_SIZE = 0.0027
+def _collect_parks_and_aerodromes():
+    from shapely.geometry import shape
+
+    parks, aero = [], []
+    for feature in features_from_seq(osmium_layer("park", OSM_PARK)):
+        try:
+            parks.append(shape(feature["geometry"]))
+        except Exception:  # noqa: BLE001
+            pass
+    for layer in ("PARQUES_E_BOSQUES", "PRACAS_E_JARDINETES"):
+        path = shapefile_to_geojson(layer, cwb.INTERIM / f"ippuc_{layer}.geojson")
+        if not path:
+            continue
+        for feature in json.loads(path.read_text(encoding="utf-8")).get("features", []):
+            geometry = feature.get("geometry") or {}
+            if geometry.get("type") in ("Polygon", "MultiPolygon"):
+                try:
+                    parks.append(shape(geometry))
+                except Exception:  # noqa: BLE001
+                    pass
+    for feature in features_from_seq(osmium_layer("aerodrome", OSM_AERODROME)):
+        try:
+            aero.append(shape(feature["geometry"]))
+        except Exception:  # noqa: BLE001
+            pass
+    return parks, aero
 
 
-def build_ocean_depth(water_seq: Path) -> Path | None:
+def _collect_zoning():
+    """commercial / college / industrial from IPPUC statutory zoning, with OSM outside Curitiba."""
+    from shapely.geometry import shape
+
+    commercial, college, industrial = [], [], []
+    zoning = shapefile_to_geojson("ZONEAMENTO", cwb.INTERIM / "ippuc_ZONEAMENTO.geojson")
+    if zoning:
+        for feature in json.loads(zoning.read_text(encoding="utf-8")).get("features", []):
+            geometry = feature.get("geometry") or {}
+            if geometry.get("type") not in ("Polygon", "MultiPolygon"):
+                continue
+            code = ((feature.get("properties") or {}).get("SG_ZONA") or "").strip().upper()
+            bucket = (
+                college if code in ZONE_COLLEGE
+                else industrial if code in ZONE_INDUSTRIAL
+                else commercial if code in ZONE_COMMERCIAL
+                else None
+            )
+            if bucket is not None:
+                try:
+                    bucket.append(shape(geometry))
+                except Exception:  # noqa: BLE001
+                    pass
+    for feature in features_from_seq(osmium_layer("commercial", OSM_COMMERCIAL)):
+        try:
+            commercial.append(shape(feature["geometry"]))
+        except Exception:  # noqa: BLE001
+            pass
+    for feature in features_from_seq(osmium_layer("industrial", OSM_INDUSTRIAL)):
+        try:
+            industrial.append(shape(feature["geometry"]))
+        except Exception:  # noqa: BLE001
+            pass
+    # Campuses are not reliably a zoning class — Curitiba's ZE covers 2 polygons — so they come
+    # from OSM and fold into `commercial` with type=college, which is what the 1.5 style reads.
+    for feature in features_from_seq(osmium_layer("campus", ["amenity=university", "amenity=college"])):
+        try:
+            college.append(shape(feature["geometry"]))
+        except Exception:  # noqa: BLE001
+            pass
+    return commercial, college, industrial
+
+
+def build_ocean_depth(polygons_in, water_kind) -> Path | None:
     """`ocean_depth_index.json` plus the `ocean_foundations` tile layer.
 
     Without these two, water is unconstrained: tracks can be laid straight across a reservoir at
     any elevation because nothing tells the game where the bed is. The index is the rule, the tile
-    layer is the visual — shipping only one of them gets you either an invisible restriction or a
-    shaded surface that restricts nothing.
-
-    The index format mirrors the buildings index: a uniform grid over the water bbox, each
-    non-empty cell listing the polygons overlapping it.
+    layer is the visual — shipping only one gets you either an invisible restriction or shading
+    that restricts nothing.
     """
     print("  ocean depth index + ocean_foundations")
-    from shapely.geometry import mapping, shape
+    from shapely.geometry import mapping
 
-    polygons = []
-    for feature in features_from_seq(water_seq):
-        geometry = feature.get("geometry") or {}
-        kind = (feature.get("properties") or {}).get("kind") or "water"
-        depth = WATER_DEPTH_M.get(kind, DEFAULT_WATER_DEPTH_M)
-        try:
-            geom = shape(geometry)
-        except Exception:  # noqa: BLE001
-            continue
-        if geom.is_empty:
-            continue
-        parts = geom.geoms if geom.geom_type == "MultiPolygon" else [geom]
-        for part in parts:
-            if part.geom_type != "Polygon" or part.is_empty:
-                continue
-            polygons.append((part, depth))
+    polygons = [
+        (p, WATER_DEPTH_M.get(water_kind.get(id(p), "water"), DEFAULT_WATER_DEPTH_M))
+        for p in polygons_in
+    ]
     if not polygons:
         print("    ! no water polygons — skipping")
         return None
@@ -275,15 +385,20 @@ def build_ocean_depth(water_seq: Path) -> Path | None:
                 cells.setdefault((col, row), []).append(index)
 
     all_depths = [d["d"] for d in depths]
-    index_payload = {
-        "cs": cs_y,
-        "bbox": [round(min_lon, 6), round(min_lat, 6), round(max_lon, 6), round(max_lat, 6)],
-        "grid": [cols, rows],
-        "cells": [[col, row, *ids] for (col, row), ids in sorted(cells.items(), key=lambda kv: kv[0][::-1])],
-        "depths": depths,
-        "stats": {"count": len(depths), "minDepth": min(all_depths), "maxDepth": max(all_depths)},
-    }
-    cwb.write_json(cwb.OUT / "ocean_depth_index.json", index_payload)
+    cwb.write_json(
+        cwb.OUT / "ocean_depth_index.json",
+        {
+            "cs": cs_y,
+            "bbox": [round(min_lon, 6), round(min_lat, 6), round(max_lon, 6), round(max_lat, 6)],
+            "grid": [cols, rows],
+            "cells": [
+                [col, row, *ids]
+                for (col, row), ids in sorted(cells.items(), key=lambda kv: kv[0][::-1])
+            ],
+            "depths": depths,
+            "stats": {"count": len(depths), "minDepth": min(all_depths), "maxDepth": max(all_depths)},
+        },
+    )
     print(f"    {len(depths):,} water polygons, grid {cols} x {rows}, {len(cells):,} cells")
     print(f"    depth range {min(all_depths)} to {max(all_depths)} m")
 
@@ -303,120 +418,96 @@ def build_ocean_depth(water_seq: Path) -> Path | None:
     return layer
 
 
-def build_landuse() -> Path:
-    """Parks and aerodromes in one `landuse` layer, with the two made geometrically disjoint.
+def build_ground_layers() -> dict[str, Path]:
+    """Emit water / landuse / commercial / industrial as mutually disjoint surfaces."""
+    print("  ground layers (water, landuse, commercial, industrial)")
+    from shapely.geometry import mapping
 
-    Railyard renders both from this layer as `fill-extrusion` with height 0 and base 0
-    (`parks-modded` filters `kind=park`, `airports-modded` filters `kind=aerodrome`). Two
-    coplanar extrusions at the same height z-fight: Afonso Pena's apron flickered against the
-    grass and woodland polygons OSM maps *inside* the airport perimeter — 75 park polygons
-    overlapping 4.63 km2 of aerodrome.
+    water = _collect_water()
+    water_kind = {}
+    parks, aero = _collect_parks_and_aerodromes()
+    commercial, college, industrial = _collect_zoning()
 
-    Dissolving the parks and subtracting the aerodromes fixes both that and park-on-park overlap
-    (a wood inside a park is mapped as both), which z-fights the same way but less visibly.
-    """
-    print("  landuse (parks + aerodromes)")
-    out = cwb.INTERIM / "layer_landuse.geojsonseq"
-    parks = osmium_layer("park", OSM_PARK)
-    aero = osmium_layer("aerodrome", OSM_AERODROME)
+    groups = {
+        "water": [g for g, _k in water],
+        "aerodrome": aero,
+        "college": college,
+        "park": parks,
+        "industrial": industrial,
+        "commercial": commercial,
+    }
+    print("    flattening by priority " + " > ".join(GROUND_PRIORITY))
+    flat = flatten_ground(groups)
 
-    from shapely.geometry import mapping, shape
-    from shapely.ops import unary_union
+    # Water kind drives bed depth, and dissolving loses the per-polygon tag. Re-attach it by
+    # testing each flattened piece against the original kinded geometry, deepest kind wins.
+    from shapely import STRtree
 
-    park_geoms = [shape(f["geometry"]) for f in features_from_seq(parks)]
-    for layer in ("PARQUES_E_BOSQUES", "PRACAS_E_JARDINETES"):
-        path = shapefile_to_geojson(layer, cwb.INTERIM / f"ippuc_{layer}.geojson")
-        if not path:
-            continue
-        for feature in json.loads(path.read_text(encoding="utf-8")).get("features", []):
-            geometry = feature.get("geometry") or {}
-            if geometry.get("type") in ("Polygon", "MultiPolygon"):
-                park_geoms.append(shape(geometry))
-    aero_geoms = [shape(f["geometry"]) for f in features_from_seq(aero)]
-    print(f"    inputs: {len(park_geoms):,} park, {len(aero_geoms):,} aerodrome")
+    kinded = [(g, k) for g, k in water if g.is_valid and not g.is_empty]
+    tree = STRtree([g for g, _k in kinded]) if kinded else None
 
-    park_geoms = [g for g in park_geoms if g.is_valid and not g.is_empty]
-    aero_geoms = [g for g in aero_geoms if g.is_valid and not g.is_empty]
-    merged_parks = unary_union(park_geoms) if park_geoms else None
-    merged_aero = unary_union(aero_geoms) if aero_geoms else None
-    if merged_parks is not None and merged_aero is not None:
-        merged_parks = merged_parks.difference(merged_aero)
+    def kind_for(polygon):
+        if tree is None:
+            return "water"
+        hits = tree.query(polygon, predicate="intersects")
+        best, best_depth = "water", DEFAULT_WATER_DEPTH_M
+        for i in hits:
+            k = kinded[int(i)][1]
+            d = WATER_DEPTH_M.get(k, DEFAULT_WATER_DEPTH_M)
+            if d < best_depth:
+                best, best_depth = k, d
+        return best
 
-    def explode(geometry):
-        if geometry is None or geometry.is_empty:
-            return
-        if geometry.geom_type == "Polygon":
-            yield geometry
-        elif geometry.geom_type in ("MultiPolygon", "GeometryCollection"):
-            for part in geometry.geoms:
-                if part.geom_type == "Polygon" and not part.is_empty:
-                    yield part
+    out: dict[str, Path] = {}
 
-    def gen():
-        for polygon in explode(merged_parks):
-            geometry = mapping(polygon)
-            yield {
+    water_path = cwb.INTERIM / "layer_water.geojsonseq"
+    water_features = []
+    for polygon in flat["water"]:
+        kind = kind_for(polygon)
+        water_kind[id(polygon)] = kind
+        water_features.append(
+            {
                 "type": "Feature",
-                "properties": {"kind": "park", "area": round(area_m2(geometry), 1), "sort_rank": 300},
-                "geometry": geometry,
-            }
-        for polygon in explode(merged_aero):
-            yield {
-                "type": "Feature",
-                "properties": {"kind": "aerodrome", "sort_rank": 250},
+                "properties": {"kind": kind, "sort_rank": 200},
                 "geometry": mapping(polygon),
             }
+        )
+    write_seq(water_path, water_features)
+    out["water"] = water_path
 
-    print(f"    features after dissolve + difference: {write_seq(out, gen()):,}")
+    landuse_path = cwb.INTERIM / "layer_landuse.geojsonseq"
+    landuse = []
+    for polygon in flat["park"]:
+        geometry = mapping(polygon)
+        landuse.append({"type": "Feature", "properties": {"kind": "park", "area": round(area_m2(geometry), 1), "sort_rank": 300}, "geometry": geometry})
+    for polygon in flat["aerodrome"]:
+        landuse.append({"type": "Feature", "properties": {"kind": "aerodrome", "sort_rank": 250}, "geometry": mapping(polygon)})
+    write_seq(landuse_path, landuse)
+    out["landuse"] = landuse_path
+
+    commercial_path = cwb.INTERIM / "layer_commercial.geojsonseq"
+    commercial_features = []
+    for kind, polys in (("commercial", flat["commercial"]), ("college", flat["college"])):
+        for polygon in polys:
+            geometry = mapping(polygon)
+            commercial_features.append({"type": "Feature", "properties": {"type": kind, "area": round(area_m2(geometry), 1), "sort_rank": 320}, "geometry": geometry})
+    write_seq(commercial_path, commercial_features)
+    out["commercial"] = commercial_path
+
+    industrial_path = cwb.INTERIM / "layer_industrial.geojsonseq"
+    write_seq(
+        industrial_path,
+        (
+            {"type": "Feature", "properties": {"kind": "industrial", "sort_rank": 310}, "geometry": mapping(p)}
+            for p in flat["industrial"]
+        ),
+    )
+    out["industrial"] = industrial_path
+
+    ocean = build_ocean_depth(flat["water"], water_kind)
+    if ocean:
+        out["ocean_foundations"] = ocean
     return out
-
-
-def build_zoning() -> tuple[Path, Path]:
-    """`commercial` (with the college distinction) and `industrial`, from statutory zoning."""
-    print("  commercial + industrial (IPPUC zoning, OSM fallback outside Curitiba)")
-    commercial_out = cwb.INTERIM / "layer_commercial.geojsonseq"
-    industrial_out = cwb.INTERIM / "layer_industrial.geojsonseq"
-    zoning = shapefile_to_geojson("ZONEAMENTO", cwb.INTERIM / "ippuc_ZONEAMENTO.geojson")
-
-    commercial, industrial = [], []
-    counts = {"commercial": 0, "college": 0, "industrial": 0}
-    if zoning:
-        for feature in json.loads(zoning.read_text(encoding="utf-8")).get("features", []):
-            geometry = feature.get("geometry") or {}
-            if geometry.get("type") not in ("Polygon", "MultiPolygon"):
-                continue
-            tags = feature.get("properties") or {}
-            code = (tags.get("SG_ZONA") or "").strip().upper()
-            if code in ZONE_COLLEGE:
-                counts["college"] += 1
-                commercial.append({"type": "Feature", "properties": {"type": "college", "area": round(area_m2(geometry), 1), "sort_rank": 320}, "geometry": geometry})
-            elif code in ZONE_COMMERCIAL:
-                counts["commercial"] += 1
-                commercial.append({"type": "Feature", "properties": {"type": "commercial", "area": round(area_m2(geometry), 1), "sort_rank": 320}, "geometry": geometry})
-            elif code in ZONE_INDUSTRIAL:
-                counts["industrial"] += 1
-                industrial.append({"type": "Feature", "properties": {"kind": "industrial", "sort_rank": 310}, "geometry": geometry})
-
-    # Zoning only covers the Curitiba municipality; OSM carries the other 16.
-    for feature in features_from_seq(osmium_layer("commercial", OSM_COMMERCIAL)):
-        counts["commercial"] += 1
-        commercial.append({"type": "Feature", "properties": {"type": "commercial", "area": round(area_m2(feature["geometry"]), 1), "sort_rank": 320}, "geometry": feature["geometry"]})
-    for feature in features_from_seq(osmium_layer("industrial", OSM_INDUSTRIAL)):
-        counts["industrial"] += 1
-        industrial.append({"type": "Feature", "properties": {"kind": "industrial", "sort_rank": 310}, "geometry": feature["geometry"]})
-
-    # University and college campuses are not reliably a zoning class anywhere — Curitiba's ZE
-    # covers only two polygons — so campuses come from OSM and are folded into `commercial` with
-    # type=college, which is what the 1.5 style actually reads.
-    campuses = osmium_layer("campus", ["amenity=university", "amenity=college"])
-    for feature in features_from_seq(campuses):
-        counts["college"] += 1
-        commercial.append({"type": "Feature", "properties": {"type": "college", "area": round(area_m2(feature["geometry"]), 1), "sort_rank": 320}, "geometry": feature["geometry"]})
-
-    print(f"    commercial {counts['commercial']:,}  college {counts['college']:,}  industrial {counts['industrial']:,}")
-    write_seq(commercial_out, commercial)
-    write_seq(industrial_out, industrial)
-    return commercial_out, industrial_out
 
 
 def build_labels() -> dict[str, Path]:
@@ -542,15 +633,7 @@ def main() -> int:
     TILE_DIR.mkdir(parents=True, exist_ok=True)
 
     sources: dict[str, Path] = {}
-    water_seq = build_water()
-    sources["water"] = water_seq
-    ocean = build_ocean_depth(water_seq)
-    if ocean:
-        sources["ocean_foundations"] = ocean
-    sources["landuse"] = build_landuse()
-    commercial, industrial = build_zoning()
-    sources["commercial"] = commercial
-    sources["industrial"] = industrial
+    sources.update(build_ground_layers())
     sources.update(build_labels())
     if not args.skip_buildings:
         buildings = build_buildings()
