@@ -1,0 +1,37 @@
+Demand is built entirely from Brazilian government sources. No OSM population estimation is used anywhere.
+
+**Residents.** IBGE Censo 2022 *Agregados por Setores Censitários* gives resident population per census tract — 5,623 tracts and 3,271,037 people inside the extent. Each tract's population is then disaggregated onto individual dwelling addresses from CNEFE, IBGE's national address register. This works because each CNEFE row is one dwelling *unit* rather than one building: an apartment tower appears as up to 540 rows sharing a coordinate. The consequence is that the row count per municipality equals the census household count, so distributing a tract's residents uniformly across its rows reproduces the census mean household size by construction rather than by assumption. 1,388,241 dwelling units placed, 99.90% of the census household count of 1,389,625.
+
+**Jobs.** IBGE CEMPRE 2024 municipal employment totals distributed across 148,690 establishment addresses from CNEFE, weighted by establishment type inferred by keyword from each record's free-text description. Municipalities that the bounding box cuts through are prorated by the share of their establishments falling inside the extent, rather than by area or population.
+
+**Commutes.** Doubly-constrained gravity model with iterative proportional fitting. The deterrence function *and* the travel-time model are fitted jointly by grid search against the observed commute-time distribution from Censo 2022 table 10330, crossed by transport mode so the target is car trips specifically rather than all modes — the all-mode distribution is materially slower and calibrating car times against it stretches every trip. Fit quality χ² 0.0071; modelled band shares 4.8 / 26.8 / 35.3 / 28.5 / 4.5% against observed 6.3 / 26.3 / 38.9 / 23.7 / 4.9%. Cross-municipal flows are bounded using the same table's workplace-location classification. All 46,709 distinct origin-destination pairs were then routed through a local OSRM instance for real road times and distances, with zero routing failures.
+
+**Education.** INEP Censo Escolar 2024 supplies real per-school enrolment by level for 2,051 active schools inside the extent (680,403 enrolments). It carries no coordinates, so each school is geocoded by joining its postcode to CNEFE and preferring an address CNEFE already records as an education establishment — 79% matched that way. Travel fractions are applied by level (infantil 0.20, anos iniciais 0.35, anos finais 0.60, médio 0.85) because young children do not travel independently.
+
+**Special demand.** 57 hand-curated places — airport, 18 university campuses, 10 shopping centres, 10 hospitals, 7 parks, 4 stadiums, cultural venues. BRT terminals are deliberately excluded: a terminal is somewhere people pass through rather than a trip end, so including it would double-count journeys already represented by their home and workplace, and this map's premise is the metro Curitiba never built.
+
+Final mix: 2,037,039 modelled trips across 19,659 demand points and 64,354 pops — 64.6% commute, 20.0% special destinations, 15.3% education.
+
+---
+
+**Limitations overcome**
+
+*CNEFE and the population mesh are different vintages.* CNEFE 2022 carries the *preliminary* census mesh while `malha_com_atributos` carries the mesh corrected in April 2025. Their tract codes look joinable and are not: stripping CNEFE's suffix matches 97% of codes, but point-in-polygon assignment disagrees with that join on 11% of addresses. Addresses are therefore assigned to tracts spatially, not by code.
+
+*OSM building coverage in Brazil is unusable.* OpenStreetMap has 87,133 building footprints inside this extent against Overture's 1,323,335, for a census household count of 1,389,625. Geometry therefore comes from Overture. The trade-off inverts on attributes — only 0.1% of Overture's Brazilian footprints carry a height, while OSM has few buildings but tags them well — so heights are borrowed from overlapping OSM buildings where available and defaulted otherwise.
+
+*No published origin-destination matrix exists at usable resolution.* The commute matrix is therefore synthetic, but it is fitted to genuine observed marginals (per-municipality commute-time bands by mode, and workplace-location shares) rather than assumed.
+
+*Non-commuting institutional population.* Census tracts flagged as barracks, prisons or care institutions are excluded before pairing, so the model does not generate people commuting to work from a prison.
+
+**Augmentations with real-world data**
+
+*Statutory zoning instead of inferred land use.* The commercial and college district layers come from Curitiba's actual zoning law (IPPUC, LEI 15511/2019) rather than from OSM land-use tags. University campuses are the exception — Curitiba's *zona educacional* covers only two polygons, so campus extents come from OSM.
+
+*Official neighbourhood boundaries.* All 75 IPPUC bairros are labelled, which is better coverage than OSM provides.
+
+*Modelled water depth.* No bathymetric survey is published for Curitiba's reservoirs by IBGE, IPPUC or ANA, and GEBCO is ocean-only. Per-body mean depths come from HydroLAKES (Messager et al. 2016, CC BY 4.0), 13 bodies inside the extent. A maximum depth is derived from the mean by assuming a parabolic basin, and each body is split into concentric depth bands so the bed grades from bank to centre.
+
+**Stated plainly as estimates, not measurements**
+
+Special-demand visitor and enrolment capacities are class-based estimates by the author and are labelled as such in the source; only stadium seating uses published figures. School travel fractions are assumptions. The water-depth maximum and profile shape are models. Building foundation depths are derived from height where known and from footprint area otherwise. OSRM free-flow times run roughly 1.8× faster than the census-implied mean car commute, which biases mode choice against transit. Commuting is a minority of real urban travel and no Brazilian trip-purpose survey was located to calibrate against, so at 64.6% commute this map remains commute-weighted.
