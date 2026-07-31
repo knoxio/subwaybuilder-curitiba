@@ -205,6 +205,13 @@ spacing statistics the registry scores.
 `OSRM_PORT` defaults to 5001 — port 5000 is taken by ControlCenter (AirPlay Receiver) on
 macOS, and Docker reports that as a bare exit 125.
 
+## Publishing to Railyard
+
+Railyard reads the [Subway-Builder-Modded registry](https://github.com/Subway-Builder-Modded/registry);
+publishing is one issue there that auto-creates a PR. Every automated requirement already passes —
+see [REGISTRY-SUBMISSION.md](REGISTRY-SUBMISSION.md) for the pre-flight results, the exact form
+values, and draft answers to the data-quality questionnaire that follows validation.
+
 ## Known gaps
 
 - **No `ocean_foundations`.** Curitiba is inland, so there is no coast to shade. The Passaúna
