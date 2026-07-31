@@ -22,12 +22,12 @@ If automated validation fails, edit the issue and comment `revalidate`.
 | `manifest.dependencies` includes `subway-builder` | ✅ `>=1.0.0` |
 | Required files at zip top level, no wrapper dir | ✅ |
 | `check_map_pack.py` blockers | ✅ 0 |
-| Map ID `curitiba` unused | ✅ free |
+| Map ID `curitiba-detailed` unused | ✅ free |
 | City code `CWB` unused (260 registry codes + 3 vanilla) | ✅ free |
 
 ## Form values
 
-**Map ID** — `curitiba` *(permanent, cannot be changed later)*
+**Map ID** — `curitiba-detailed` *(permanent, cannot be changed later; must match `manifest.json`'s `id`)*
 
 **City Name** — `Curitiba`
 
@@ -121,27 +121,74 @@ reviewers look at it first. In-game screenshots are much stronger. Suggested set
 
 ## After validation — the data-quality questionnaire
 
-A **required** step: a maintainer must confirm the answers before the map can merge. Brazil has no
-existing registry maps, so the quality floor that applies to countries with existing maps does not
-bite here.
+A **required** step; a maintainer must confirm the answers before the map can merge. Filed as its
+own issue (`data-quality.yml`), prefilled with the map id. Brazil has no other registry maps, so the
+quality floor that applies to countries with existing maps does not bite here.
 
-Draft answers, from what this pipeline actually does:
+Answers, taken from the live form's wording rather than the underlying schema enums:
 
-| Question | Answer | Why |
-| --- | --- | --- |
-| `workplace_count` | `registered_self_declared` | CEMPRE counts formally registered establishments |
-| `workplace_granularity` | `adm5` | Municipal control totals distributed to census-tract level |
-| `workplace_resolution` | `mesh_125_or_adm5` | Individual CNEFE establishment addresses |
-| `workplace_intensity` | `fine_types_generic` | Keyword-classified establishment types, generic weights |
-| `resident_count` | `total_population` | Census tract `v0001`, then reduced to the commuting subset |
-| `resident_granularity` | `adm5` | Census tracts, Brazil's minimal statistical area |
-| `resident_resolution` | `mesh_125_or_adm5` | Individual CNEFE dwelling addresses |
-| `resident_intensity` | `measured_per_unit` | One CNEFE row per dwelling unit; ties to the census household count |
-| `od_metric` | `prior_informed_synthetic` | Synthetic gravity matrix calibrated to observed census commute-time bands |
-| `od_granularity` | `adm3` | Time-band and workplace-location marginals are published per municipality |
+| Question | Answer |
+| --- | --- |
+| Map ID | `curitiba-detailed` |
+| Same methodology as your other maps in this country? | No — new or different methodology |
+| Where do your job numbers come from? | A government census or survey that counts where people actually work |
+| Smallest area job numbers are reported for | Whole cities or municipalities |
+| How did you place the jobs? | Building footprints, split by workplace type using standard assumptions |
+| What do your population numbers count? | Total population, including children and retirees |
+| Smallest area population is reported for | Individual buildings or census blocks |
+| How did you place the people? | Spread evenly across each area *(see note)* |
+| Does the census publish commute data? | Partial — per-area totals plus how far or where trips tend to go |
+| Smallest area commute-flow data covers | Whole cities or municipalities |
 
-`od_metric` is the one to expect discussion on. There is no published Brazilian OD matrix at this
-resolution, so the matrix is synthetic — but it is fitted to real observed marginals rather than
-assumed, which is why `prior_informed_synthetic` rather than `none`. If a maintainer reads
-`structured_marginals` as the better fit given table 10330 supplies genuine per-municipality
-marginals, that is a reasonable reading and worth asking about rather than arguing.
+Verified against what the pipeline actually queried: CEMPRE returns one value per municipality
+(`N6 = Município`, 17 values); the census mesh returns 5,623 tracts at a median of 567 residents
+each; table 10330 returns one set of marginals per municipality.
+
+**Two answers to flag rather than assert.** The form separates *reporting* granularity from
+*placement* method, which is why "whole cities" is the correct answer for jobs even though the
+finished surface is address-level — the address precision is credited in the placement question. But:
+
+- *"How did you place the people?"* has no option that fits. Every choice assumes a split by building
+  footprint; this map distributes tract population across individual dwelling *units* from a
+  government address register, which is finer than footprints. "Spread evenly across each area" is
+  the nearest wording and undersells it badly. Say so in the methodology box and let the maintainer
+  decide.
+- *"Where do your job numbers come from?"* — CEMPRE is an administrative business register where
+  employers self-declare employment per local unit, not a survey of workers. The suggested answer is
+  the closest available and slightly flatters it.
+
+The `EFFECTIVE RESOLUTION` section of [METHODOLOGY.txt](METHODOLOGY.txt) exists to carry this
+distinction in prose, where a dropdown cannot.
+
+## Data source links
+
+For the questionnaire's Sources field:
+
+```
+IBGE Censo 2022, Agregados por Setores Censitários:
+https://ftp.ibge.gov.br/Censos/Censo_Demografico_2022/Agregados_por_Setores_Censitarios/
+
+IBGE CNEFE 2022 (national address register):
+https://ftp.ibge.gov.br/Cadastro_Nacional_de_Enderecos_para_Fins_Estatisticos/Censo_Demografico_2022/
+
+IBGE CEMPRE 2024 (SIDRA table 9509, variable 707):
+https://sidra.ibge.gov.br/tabela/9509
+
+IBGE Censo 2022 commuting (SIDRA table 10330, variable 13376):
+https://sidra.ibge.gov.br/tabela/10330
+
+INEP Censo Escolar 2024:
+https://www.gov.br/inep/pt-br/acesso-a-informacao/dados-abertos/microdados/censo-escolar
+
+IPPUC geodata (zoning, neighbourhoods, parks, hydrography):
+https://ippuc.org.br/geodownloads/geo.htm
+
+Overture Maps 2026-07-22.0 (building footprints):
+https://overturemaps.org/
+
+OpenStreetMap (roads, aeroways, labels), © OpenStreetMap contributors, ODbL:
+https://www.openstreetmap.org/copyright
+
+HydroLAKES v1.0 (water depth), Messager et al. 2016, CC BY 4.0:
+https://www.hydrosheds.org/products/hydrolakes
+```
