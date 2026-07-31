@@ -1,0 +1,6 @@
+.venv/
+data/
+out/
+CWB.zip
+__pycache__/
+*.pyc

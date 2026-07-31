@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "id": "curitiba",
+  "name": "Curitiba",
+  "author": "joao",
+  "github_id": 0,
+  "description": "# Curitiba · CWB\n\nThe city that invented bus rapid transit instead of building a metro. Curitiba's 1974 *eixos estruturais* — dedicated bus lanes, tube stations, pre-paid boarding — became the model copied by Bogotá, Istanbul and Jakarta, and are the reason the city never laid rail. The 2022 census records **0.0% of commutes by train or metro**, against 26.5% by bus and 49.8% by car. Build the metro Curitiba never built.\n\n## Coverage\n<table style=\"width: auto\"><tr><td><strong>Region</strong></td><td>Greater Curitiba, Paraná (BR) — 17 municipalities</td></tr><tr><td><strong>Bounding Box</strong></td><td>-49.55, -25.72 → -48.95, -25.15</td></tr><tr><td><strong>Playable Area</strong></td><td>~3,797 km²</td></tr></table>\n\n## Population Summary\n<table style=\"width: auto\"><tr><td><strong>Census Population (2022)</strong></td><td align=\"right\">3,271,037</td></tr><tr><td><strong>Modelled Commuters</strong></td><td align=\"right\">1,316,245</td></tr><tr><td><strong>Total Modelled Demand</strong></td><td align=\"right\">2,037,039</td></tr></table>\n\n## Map Statistics\n<table style=\"width: auto\"><tr><td><strong>Buildings Indexed</strong></td><td align=\"right\">1,016,715</td></tr><tr><td><strong>Demand Points</strong></td><td align=\"right\">19,659</td></tr><tr><td><strong>Population Nodes</strong></td><td align=\"right\">64,354</td></tr><tr><td><strong>Median Commute Distance</strong></td><td align=\"right\">9.3 km</td></tr><tr><td><strong>Mean Commute Distance</strong></td><td align=\"right\">11.2 km</td></tr></table>\n\n## Methodology\nDemand is built entirely from Brazilian government sources — no OSM population estimation.\n\n1. **Residents.** IBGE Censo 2022 census tracts (5,623 tracts, 3,271,037 people) disaggregated onto individual dwelling addresses from CNEFE, the national address register. 1,388,241 dwelling units placed — 99.90% of the census household count. Each CNEFE row is one dwelling *unit*, so a tower appears as up to 540 rows at one coordinate and the distribution reproduces census household size by construction.\n2. **Jobs.** IBGE CEMPRE 2024 municipal employment totals distributed across 148,690 establishment addresses from CNEFE, weighted by type inferred from each establishment's recorded description.\n3. **Commutes.** Doubly-constrained gravity model with the deterrence function *and* the travel-time model fitted jointly to the observed car-commute time distribution from Censo 2022 table 10330 (χ² 0.0071). All 46,709 distinct pairs routed through OSRM.\n4. **Special demand.** 57 places — Afonso Pena airport, 18 university campuses, 4 stadiums, 10 shopping centres, 10 hospitals, 7 parks, the zoo and cultural venues. BRT terminals are deliberately excluded: a terminal is somewhere people pass through rather than a trip end, and including it would both double-count and pre-commit the player to the corridors URBS already chose.\n5. **Schools.** INEP's Censo Escolar 2024 gives real per-school enrolment for 2,051 active schools in the extent (680,403 enrolments), geocoded by joining each school's postcode to CNEFE — 79% land on an address CNEFE already records as an education establishment. Travel fractions by level (infantil 0.20 through médio 0.85) reflect that a six-year-old does not travel independently. Commuting is a minority of urban travel, so a map built only from a journey-to-work matrix under-represents exactly the destinations a player wants to serve; the final split is 64.6% commute, 20.0% special destinations, 15.3% education.\n6. **Tiles and buildings.** Overture footprints (OSM has only 87k in this extent against Overture's 1.32M), with heights borrowed from OSM where available. The `commercial` district layer comes from IPPUC's statutory zoning rather than OSM land use, and neighbourhood labels from Curitiba's 75 official bairros.\n\n## Additional Features\n- **Building Collision** — 1,016,715 indexed footprints with height data, shipped in both binary and legacy JSON form so the pack installs on any game version.\n- **Statutory zoning** — the 1.5 commercial/college district tint is driven by Curitiba's actual zoning law (LEI 15511/2019), not by inferred land use.\n- **Official neighbourhoods** — all 75 IPPUC bairros labelled.\n- **Roads & Runways** — 59,132 road ways plus Afonso Pena and Bacacheri airport geometry.",
+  "tags": [
+    "south-america",
+    "airports",
+    "universities",
+    "entertainment",
+    "parks",
+    "schools"
+  ],
+  "gallery": [],
+  "source": "https://github.com/USER/subwaybuilder-curitiba",
+  "update": {
+    "type": "github",
+    "repo": "USER/subwaybuilder-curitiba"
+  },
+  "dependencies": {
+    "subway-builder": ">=1.0.0"
+  },
+  "is_test": false,
+  "city_code": "CWB",
+  "country": "BR",
+  "population": 3271037,
+  "level_of_detail": "high-detail",
+  "source_quality": "high-quality",
+  "data_source": "IBGE/INEP/IPPUC",
+  "location": "south-america",
+  "special_demand": [
+    "airports",
+    "universities",
+    "entertainment",
+    "parks",
+    "schools"
+  ],
+  "residents_total": 2037039,
+  "points_count": 19659,
+  "population_count": 64354,
+  "initial_view_state": {
+    "latitude": -25.4284,
+    "longitude": -49.2733,
+    "zoom": 11,
+    "bearing": 0
+  },
+  "search_aliases": [
+    "Curitiba",
+    "クリチバ",
+    "库里蒂巴",
+    "쿠리치바",
+    "Куритиба",
+    "كوريتيبا"
+  ]
+}
